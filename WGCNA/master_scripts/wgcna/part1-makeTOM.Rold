@@ -1,0 +1,284 @@
+install.packages("tcltk2") # for interactive file and directory selection
+
+################################################################################################
+### WGCNA PART 1
+# This script will create a datExpr data frame based on expression data from an eset.
+# For WGCNA the columns of datExpr will be probes and the rows will be arrays. The script
+# will also create a datTraits frame where columns are clinical traits and rows are arrays.
+# The row names of datExpr must match the row names of datTraits.
+# CURRENTLY, as of February 2017, AMPEL is using ONLY GCRMA normalized esets annotated with
+# manufacturer CDFs (i.e., Affy, Illumina, etc.), and NOT Brainarray.
+################################################################################################
+
+### LOAD AND CONFIGURE WGCNA LIBRARY
+library(tcltk2)
+library(Biobase)
+library(limma)
+library(WGCNA)
+options(stringsAsFactors = FALSE)
+enableWGCNAThreads()
+
+###LOAD NORMALIZED EXPRESSION DATA
+
+
+wrkdir <- tk_choose.dir(default = "", caption = "Select your WGCNA project root directory")
+eset <- tk_choose.files(default = "", caption = "Select eset for WGCNA analysis",
+                        multi = FALSE, filters = NULL, index = 1)
+
+setwd("C:/Users/Nick Geraci/Desktop/WGCNA/B-cells/CD20_B-cells/CD20_B-cells_Standardized/")
+load("./eset_affy_gcrma_ampel.RData")
+eset <- eset_affy_gcrma_ampel #Rename loaded eset
+rm(eset_affy_gcrma_ampel) #Remove original eset
+
+###Filter out any cell type or cohort that is not relevant to the present comparisons
+# table(eset$cell_type) #Check which cell types are there
+# eset$cell_type <- droplevels(eset$cell_type) #Only keep the data that have cell type associations
+eset$cohort <- as.character(eset$cohort)
+table(eset$cohort) #Check that SLE and CTL (controls) are present
+index <- which(eset$cohort != "RA") #Remove RA samples
+eset <- eset[,index]
+
+###Load patient data
+pdata <- read.table("./GSE4588_CD20-Bcells_Active_Patient-Data.txt", header=TRUE, sep="\t")
+rownames(pdata) <- pdata[,1] #Make the first column be the row names
+pdata <- pdata[,-1] #Remove the first column
+sampleNames(eset) #Look at the sample names
+rownames(pdata) #Look at the patient data row names
+identical(rownames(pdata),sampleNames(eset)) #If FALSE, rename the rows in pData to match sample names in eset
+
+###THIS SECION WILL BE UNIQUE FOR EACH DATASET!!!
+pdata$SLEDAI <- gsub(0,"",pdata$SLEDAI)
+index <- which(pdata$gender=="Male")
+pdata <- pdata[-index,]
+pdata$SLEDAI <- as.numeric(pdata$SLEDAI)
+index <- which(pdata$SLEDAI>=6)
+actives <- pdata[index,]
+index <- which(pdata$cohort=="CTL")
+controls <- pdata[index,]
+pdata <- rbind(controls,actives)
+index <- which(sampleNames(eset)%in%rownames(pdata))
+eset <- eset[,index]
+pdata <- pdata[order(rownames(pdata)),]
+identical(rownames(pdata),sampleNames(eset)) #Double check
+rownames(pdata) <- paste(pdata$cohort,pdata$GEO,pdata$SLEDAI,sep=".") #Assign new names
+sampleNames(eset) <- rownames(pdata)
+
+pData(eset) <- pdata #Substitute patient data for the phenoData in the eset
+
+###Create SYMBOL column required by some a4 functions
+fData(eset)[,"SYMBOL"] <- as.character(fData(eset)[,"geneSymbol"]) #Take information from the featureData (fData) in the eset
+fData(eset)[,"ENTREZ"] <- as.character(fData(eset)[,"geneEntrezID"]) #Take information from the featureData (fData) in the eset
+
+###REMOVE AFFY PROBES
+index <- which( substr(rownames(eset),1,4)!="AFFX" )
+eset <- eset[index,]
+rm(index)
+
+#######################################################################################
+# Plot PCA
+
+library(affycoretools)
+library(rgl)
+
+dev.off()
+eset$cohort <- factor(eset$cohort)
+plotPCA(eset, groups=as.numeric(eset$cohort), groupnames=levels(eset$cohort), main="GSE4588_CD20-Bcells_Active",
+        pcs=c(1,3), plot3d=FALSE, col=c("red","blue"), pch=c(16,17), addtext=sampleNames(eset))
+
+plotPCA(eset, groups=as.numeric(eset$cohort), groupnames=levels(eset$cohort),
+        pcs=c(1,2,3), plot3d=TRUE, col=c("red","blue"), pch=c(16,17,17))
+
+#######################################################################################
+# Draw a quick dendrogram to look for outliers in the unfiltered set
+library(flashClust)
+dev.off()
+sampleTree <- flashClust(dist(t(exprs(eset))), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.9);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "GSE4588_CD20-Bcells-Active", sub="", xlab="", cex.lab = 1.5,
+     cex.axis = 1.5, cex.main = 1.5)
+
+### STOP: IF OUTLIERS ARE DETECTED IN THE DENDROGRAM, USE THIS
+# Find clusters cut by the line and plot a line to show the cut
+# abline(h = 115, col = "red"); #Determine cluster under the line
+# clust <- cutreeStatic(sampleTree, cutHeight = 115, minSize = 10)
+# table(clust)
+# keepSamples <- (clust==1) #Cluster 1 contains the samples we want to keep.
+# eset <- eset[,keepSamples] #SLE-GSM260919 was removed as an outlier
+# nrow(eset)
+
+# ### ALTERNATIVELY: IF OUTLIERS ARE DETECTED IN THE DENDROGRAM, USE THIS
+# sampleNames(eset)
+# eset <- eset[,sampleNames(eset)!="SLE-GSM260919"] #Remove the outlier sample(s) by name
+
+#######################################################################################
+###Filter out any unannotated probes (Currently NOT performing this)
+# index <- which(is.na(fData(eset)[,"ENTREZ"])|fData(eset)[,"ENTREZ"]=="")
+# eset <- eset[-index,]
+# nrow(eset)
+# 
+# #######################################################################################
+# # PLOT HISTOGRAM OF INTENSITIES AND FILTER LOW PASS PROBES IF NO FILTER HAS YET BEEN APPLIED
+# 
+dev.off() #Clear any graphs
+nrow <- format(as.numeric(nrow(eset)),big.mark=",",scientific=F) #Make an object out of the number of rows that originally are in the eset
+CD20 <- hist(rowMeans(exprs(eset)), breaks=4000, xlab="Average log2 Probe Intensity",
+             main="Active SLE All Intensities",
+             sub=paste(nrow, "total probes"), xlim=c(2,15), col="yellow")
+
+nrow(exprs(eset)) #54613
+0.50*nrow(exprs(eset)) #27306.5
+CD20.counts <- as.data.frame(CD20$counts)
+sum(CD20.counts[1:39,]) #Find the break where the lower 50% of probes are removed
+CD20.breaks <- as.data.frame(CD20$breaks)
+cut.off <- as.data.frame(CD20.breaks[39,]) #2.54
+
+
+dev.off() #Clear any graphs
+par(mfrow=c(1,2)) #Setting graphics parameters A vector of length 2, where the first argument specifies the number of rows and the second the number of columns of plots
+
+nrow <- format(as.numeric(nrow(eset)),big.mark=",",scientific=F) #Make an object out of the number of rows that originally are in the eset
+
+hist(rowMeans(exprs(eset)), breaks=100, xlab="Average log2 Probe Intensity",
+     main="Active SLE All Intensities",
+     sub=paste(nrow, "total probes"), xlim=c(2,12), col="yellow")
+
+index <- which((rowMeans(exprs(eset))>2.6)|(rowMeans(exprs(eset))<2.3)) #Get the probes' row numbers whose expression averages are NOT between 2.3 and 2.6
+nrow(eset) #How many probes are in the eset
+length(index) #How many probes did NOT have average expression between 2.3 and 2.6
+nrow(eset)-length(index) #How many probes do have average expression between 2.3 and 2.6
+
+# Basically, zoom in to the data
+hist(rowMeans(exprs(eset)), breaks=4000, xlab="Average log2 Probe Intensity",
+     main="Intensities 2.3-2.6",
+     sub=paste((nrow(eset)-length(index))," with 2.3 < mean < 2.6, out of ", nrow), xlim=c(2.3,2.6), col="yellow") #Write in a calculation to find how many probes are represented in this range
+
+abline(v=2.55, lty=2, lwd=2, col="red")
+
+# APPLY THE LOW PASS FILTER
+index <- which(rowMeans(exprs(eset))<2.55) #Get row numbers for probes with average expression less than 2.27
+eset <- eset[-index,] #Remove the probes with average expression less than 2.27
+nrow(eset) #Check the number of probes remaining
+
+#######################################################################################
+###Create the datExpr0 frame for WGCNA
+datExpr0 <- exprs(eset) #Take out the expression data ONLY from the eset dataframe
+nrow(datExpr0) #Make sure the number of rows/probes matches the filtered eset
+
+# IMPORTANT! TRANSPOSE THE ORIGINAL EXPRESSION MATRIX
+# WGCNA requires columns be probes and rows be arrays
+datExpr0 <- t(datExpr0) 
+
+### CHECK FOR MISSING EXCESSIVE VALUES AND IDENTIFY OUTLIER MICROARRAY SAMPLES
+
+# Check for gene entries with NAs and very low counts
+gsg <- goodSamplesGenes(datExpr0, verbose = 3);
+gsg$allOK
+
+# Display and remove these bad entries
+if (!gsg$allOK)
+{
+  # Optionally, print the gene and sample names that were removed:
+  if (sum(!gsg$goodGenes)>0)
+    printFlush(paste("Removing genes:", paste(colnames(datExpr0)[!gsg$goodGenes], collapse = ", ")));
+  if (sum(!gsg$goodSamples)>0)
+    printFlush(paste("Removing samples:", paste(rownames(datExpr0)[!gsg$goodSamples], collapse = ", ")));
+  # Remove the offending genes and samples from the data:
+  datExpr0 <- datExpr0[gsg$goodSamples, gsg$goodGenes]
+}
+
+# We must remove probe columns containing only one value. Failure to do so breaks downstream TOM creation,
+# and it must be performed now before module colors are assigned.
+datExpr1 <- datExpr0[,apply(datExpr0,2,function(x) any(c(FALSE,x[-length(x)]!=x[-1])))]
+ncol(datExpr0) - ncol(datExpr1)
+datExpr0 <- datExpr1
+
+# ##Remove bad probes eliminated by good genes function
+datExpr1 <- t(datExpr0)
+eset <- eset[rownames(eset)%in%rownames(datExpr1),]
+nrow(eset)==nrow(datExpr1)
+rm(datExpr1,gsg)
+
+#######################################################################################
+# Plot PCA RECHECK
+
+library(affycoretools)
+library(rgl)
+
+dev.off()
+eset$cohort <- factor(eset$cohort)
+plotPCA(eset, groups=as.numeric(eset$cohort), groupnames=levels(eset$cohort), main="GSE4588_CD20-Bcells_Active Post-Filter",
+        pcs=c(1,3), plot3d=FALSE, col=c("red","blue"), pch=c(16,17), addtext=sampleNames(eset))
+
+plotPCA(eset, groups=as.numeric(eset$cohort), groupnames=levels(eset$cohort),
+        pcs=c(1,2,3), plot3d=TRUE, col=c("red","blue"), pch=c(16,17,17))
+
+#######################################################################################
+# Draw a quick dendrogram to look for outliers in the filtered set
+library(flashClust)
+dev.off()
+sampleTree <- flashClust(dist(datExpr0), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.9);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "GSE4588_CD20-Bcells-Active_WGNA-Post-Filter", sub="", xlab="", cex.lab = 1.5,
+     cex.axis = 1.5, cex.main = 1.5)
+
+datExpr <- datExpr0
+ncol(datExpr)
+nGenes <- ncol(datExpr) # number of columns (probes)
+nSamples <- nrow(datExpr) # number of rows (arrays)
+rm(sampleTree, datExpr0, index, CD20, actives, controls, CD20.breaks, CD20.counts, cut.off, nrow)
+
+###########################################################################################
+## LOAD CLINICAL TRAIT DATA (Applies to both filtered and unfiltered expression sets)
+
+# Create a patients data frame analogous to expression data that will hold binary designations
+# of trait membership, or a numerical measurement of a continuous clinical variable
+patients.data <- pData(eset)
+rownames(patients.data) #Are they the same as the datExpr object, minus any outliers?
+patients.data[is.na(patients.data)] <- ""
+patients.data <- as.data.frame(patients.data)
+
+colnames(patients.data)
+datTraits <- patients.data[,c("cohort","SLEDAI","age")]
+rownames(datTraits) <- colnames(exprs(eset))
+
+# Create numerical factors of binary designations
+
+# cohort
+table(patients.data$cohort)
+datTraits$cohort <- gsub("CTL",0,datTraits$cohort)
+datTraits$cohort <- gsub("SLE",1,datTraits$cohort)
+datTraits$cohort <- as.numeric(datTraits$cohort)
+
+# SLEDAI
+table(patients.data$SLEDAI)
+datTraits$SLEDAI <- as.numeric(datTraits$SLEDAI)
+
+# Age
+table(patients.data$age)
+datTraits$age <- as.numeric(datTraits$age)
+
+#####Clean up the dataset and display final dendrogram with corresponding clinical factors
+collectGarbage();
+
+# Re-cluster samples after outlier removal and display dendrogram
+sampleTree <- flashClust(dist(datExpr), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors <- numbers2colors(datTraits, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath
+plotDendroAndColors(sampleTree, traitColors,
+                    groupLabels = names(datTraits),
+                    main = "GSE4588_CD20-Bcells-Active_WGNA-Post-Filter" )
+
+### SAVE OBJECTS 
+save(datExpr, datTraits, file="GSE4588_CD20-Bcells_Active_WGCNA_Traits-Expression_NSG_2017-06-13.RData")
+save(eset,file="GSE4588_CD20-Bcells_Active_WGCNA_Probe-Filtered-ESET_NSG_2017-06-13.RData")
